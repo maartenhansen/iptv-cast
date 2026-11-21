@@ -282,7 +282,11 @@ class Handler(BaseHTTPRequestHandler):
         input_url = f"http://127.0.0.1:{PORT}/p?" + urllib.parse.urlencode({"k": key, "url": target})
         try:
             langs = [x for x in re.split(r"[,\s]+", q.get("langs", ["nl,en"])[0].lower()) if re.fullmatch(r"[a-z]{2}", x)]
-            sess = convert.get_or_start(target, start, input_url, log, langs)
+            try:
+                manual = max(-30.0, min(30.0, float(q.get("subdelay", ["0"])[0] or 0)))
+            except ValueError:
+                manual = 0.0
+            sess = convert.get_or_start(target, start, input_url, log, langs, manual)
         except Exception as e:
             log(f"omzetting mislukt: {e}")
             return self.reply(502, json.dumps({"error": f"Omzetting mislukt: {e}"}), "application/json")
@@ -291,6 +295,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(502, json.dumps({"error": "Omzetting kwam niet op gang"}), "application/json")
         host = self.headers.get("Host") or f"{lan_ip()}:{PORT}"
         body = convert.master_playlist(sess, f"http://{host}/hls/{sess.sid}")
+        gap = convert.measure_gap(sess)
+        if gap or sess.manual:
+            log(f"ondertitels: {gap:.2f}s naar voren (beeld begint vóór het geluid), handmatig {sess.manual:+.1f}s")
         self.reply(200, body, "application/vnd.apple.mpegurl")
 
     def hls_file(self, sid, name):
@@ -300,7 +307,7 @@ class Handler(BaseHTTPRequestHandler):
         with open(path, "rb") as f:
             data = f.read()
         if name.endswith(".vtt"):
-            data, ctype = convert.vtt_with_map(data), "text/vtt; charset=utf-8"
+            data, ctype = convert.vtt_with_map(data, sess), "text/vtt; charset=utf-8"
         elif name.endswith(".m3u8"):
             ctype = "application/vnd.apple.mpegurl"
         else:

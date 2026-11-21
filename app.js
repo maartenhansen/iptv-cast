@@ -17,7 +17,7 @@ const LS_POS = 'iptvcast.positions';   // waar je gebleven was, per film/aflever
 const LS_LASTCAT = 'iptvcast.lastcat'; // laatst gekozen categorie per tab
 const SS_NOW = 'iptvcast.now';         // wat er nu op de tv speelt
 
-const DEFAULTS = { server: '', user: '', pass: '', worker: '', key: '', langs: 'nl,en', subScale: 1, vodMode: 'auto', home: '' };
+const DEFAULTS = { server: '', user: '', pass: '', worker: '', key: '', langs: 'nl,en', subScale: 1, vodMode: 'auto', home: '', subDelay: 0 };
 
 const store = {
   get(k, d) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch { return d; } },
@@ -423,6 +423,7 @@ async function viewSettings(params) {
       <label>Grootte op tv<select name="subScale">
         <option value="0.8">Klein</option><option value="1">Normaal</option>
         <option value="1.3">Groot</option><option value="1.6">Extra groot</option></select></label>
+      <label>Ondertitels verschuiven (seconden, bv. -1.5 = vroeger, 1 = later)<input name="subDelay" type="number" step="0.5" min="-30" max="30" inputmode="decimal"></label>
 
       <h3>Streams</h3>
       <label>Thuis-tussenschakel (Beelink met VPN)<input name="home" type="url" inputmode="url" placeholder="http://192.168.0.242:8030" autocapitalize="off"></label>
@@ -457,6 +458,7 @@ async function viewSettings(params) {
     if (v.home && !/^https?:\/\//i.test(v.home)) v.home = 'http://' + v.home;
     v.langs = String(v.langs || 'nl,en').toLowerCase().replace(/\s+/g, '');
     v.subScale = +v.subScale || 1;
+    v.subDelay = Math.max(-30, Math.min(30, +v.subDelay || 0));
     S = { ...S, ...v };
     store.set(LS_SETTINGS, S);
     apiCache.clear();
@@ -635,7 +637,7 @@ function mediaAttempts(m) {
     if (m.live || m.ext === 'm3u8') return [{ url: homeUrl('/m3u8', m.url), type: MIME.m3u8, hls: true }];
     // De Beelink zet geluid (E-AC3 -> AAC) en ondertitels om, vanaf het gevraagde startpunt.
     const start = Math.max(0, Math.floor(m.start || 0));
-    const url = `${homeUrl('/hls/play', m.url)}&start=${start}&langs=${enc(S.langs || 'nl,en')}`;
+    const url = `${homeUrl('/hls/play', m.url)}&start=${start}&langs=${enc(S.langs || 'nl,en')}&subdelay=${+S.subDelay || 0}`;
     return [{ url, type: MIME.m3u8, hls: true, conv: true, offset: start }];
   }
   if (m.live || m.ext === 'm3u8') {

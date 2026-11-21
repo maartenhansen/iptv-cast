@@ -50,6 +50,8 @@ class Session:
         self.subs = []       # [{"name":..., "lang":..., "file":...}]
         self.variant = None  # bestandsnaam van de beeld+geluid-afspeellijst
         self.error = ""
+        self.gap = None      # seconden dat het beeld vóór het geluid begint (sleutelbeeld vóór het startpunt)
+        self.manual = 0.0    # handmatige verschuiving uit de app (seconden, + = later)
 
     def alive(self):
         return self.proc is not None and self.proc.poll() is None
@@ -138,7 +140,7 @@ def build_command(sess, input_url, streams, langs=()):
     return cmd
 
 
-def get_or_start(target_url, start, input_url, log, langs=()):
+def get_or_start(target_url, start, input_url, log, langs=(), manual=0.0):
     """Geeft een lopende omzetting voor deze film+startpunt, of start een nieuwe (en stopt de oude)."""
     if not FFMPEG or not FFPROBE:
         raise RuntimeError("ffmpeg niet gevonden op de Beelink")
@@ -147,11 +149,13 @@ def get_or_start(target_url, start, input_url, log, langs=()):
         for s in list(_sessions.values()):
             if s.key == key and (s.alive() or os.path.exists(os.path.join(s.dir, s.variant or "x"))):
                 s.last = time.time()
+                s.manual = manual
                 return s
         for s in list(_sessions.values()):  # maar 1 verbinding: oude omzetting stoppen
             s.stop()
             _sessions.pop(s.sid, None)
         sess = Session(key, start)
+        sess.manual = manual
         os.makedirs(sess.dir, exist_ok=True)
         _sessions[sess.sid] = sess
     streams = probe_streams(input_url)
@@ -205,9 +209,46 @@ def file_for(sid, rel):
     return (path if os.path.isfile(path) else None), sess
 
 
-def vtt_with_map(data):
-    """Zet expliciet hoe ondertiteltijd en beeldtijd overeenkomen (beeld begint op 0)."""
+def measure_gap(sess):
+    """Hoeveel eerder begint het beeld dan het geluid? (bij verder kijken/spoelen meestal 0-10 s)
+    De Chromecast lijnt de ondertitels uit op het beeld, dus die schuiven we zoveel naar voren."""
+    if sess.gap is not None:
+        return sess.gap
+    first = os.path.join(sess.dir, (sess.variant or "g0.m3u8").replace(".m3u8", "_00000.ts"))
+    gap = 0.0
+    try:
+        r = subprocess.run([FFPROBE, "-v", "error", "-show_entries", "stream=codec_type,start_time", "-of", "json", first],
+                           capture_output=True, text=True, timeout=15)
+        st = {s.get("codec_type"): float(s.get("start_time") or 0) for s in json.loads(r.stdout or "{}").get("streams", [])}
+        if "video" in st and "audio" in st:
+            gap = max(0.0, st["audio"] - st["video"])
+    except Exception:
+        gap = 0.0
+    sess.gap = round(gap, 3)
+    return sess.gap
+
+
+_TS = re.compile(r"(?:(\d+):)?(\d{2}):(\d{2})\.(\d{3})")
+
+
+def _shift_ts(m, delta):
+    h, mi, s, ms = int(m.group(1) or 0), int(m.group(2)), int(m.group(3)), int(m.group(4))
+    t = max(0.0, h * 3600 + mi * 60 + s + ms / 1000 + delta)
+    h, rest = divmod(round(t * 1000), 3600_000)
+    mi, rest = divmod(rest, 60_000)
+    s, ms = divmod(rest, 1000)
+    return f"{h:02d}:{mi:02d}:{s:02d}.{ms:03d}"
+
+
+def vtt_with_map(data, sess=None):
+    """Ondertitelstukje klaarmaken: tijden corrigeren en expliciet koppelen aan de beeldtijd."""
     text = data.decode("utf-8", "replace")
+    delta = 0.0
+    if sess is not None:
+        delta = sess.manual - measure_gap(sess)
+    if abs(delta) >= 0.01:
+        text = "\n".join(_TS.sub(lambda m: _shift_ts(m, delta), line) if "-->" in line else line
+                         for line in text.split("\n"))
     if "X-TIMESTAMP-MAP" not in text:
         text = re.sub(r"^WEBVTT[^\n]*\n", "WEBVTT\nX-TIMESTAMP-MAP=MPEGTS:0,LOCAL:00:00:00.000\n", text, count=1)
     return text.encode("utf-8")
