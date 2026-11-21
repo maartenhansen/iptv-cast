@@ -49,6 +49,15 @@ function toast(msg, ms = 3500) {
 
 function setTitle(t) { $('#title').textContent = t; document.title = `${t} · IPTV Cast`; }
 
+// "01:52:00" of duration_secs -> seconden
+function durationSecs(info) {
+  const d = +info?.duration_secs;
+  if (d > 0) return d;
+  const m = String(info?.duration || '').match(/^(\d+):(\d{2})(?::(\d{2}))?$/);
+  if (!m) return 0;
+  return m[3] ? (+m[1]) * 3600 + (+m[2]) * 60 + (+m[3]) : (+m[1]) * 60 + (+m[2]);
+}
+
 const LANGS = { nl: 'Nederlands', en: 'Engels', fr: 'Frans', de: 'Duits', es: 'Spaans', it: 'Italiaans', pt: 'Portugees', tr: 'Turks', ar: 'Arabisch', pl: 'Pools' };
 const langName = code => LANGS[String(code || '').slice(0, 2).toLowerCase()] || (code ? String(code).toUpperCase() : '');
 
@@ -310,7 +319,7 @@ async function viewMovie({ id, ext }, alive) {
   const fileExt = md.container_extension || ext || 'mp4';
   bindPlay(`vod:${id}`, () => ({
     url: `${streamBase('movie')}/${md.stream_id || id}.${fileExt}`,
-    ext: fileExt, title, subtitle: [year, info.genre].filter(Boolean).join(' · '), poster,
+    ext: fileExt, title, subtitle: [year, info.genre].filter(Boolean).join(' · '), poster, duration: durationSecs(info),
     ...picker.get(),
   }));
 }
@@ -385,7 +394,7 @@ async function viewEpisode({ id, tmdb, season, i }, alive) {
   const ext = ep.container_extension || 'mp4';
   bindPlay(`ep:${ep.id}`, () => ({
     url: `${streamBase('series')}/${ep.id}.${ext}`,
-    ext, title: `${cleanName(showName)} – ${label}`, subtitle: ep.title || '', poster,
+    ext, title: `${cleanName(showName)} – ${label}`, subtitle: ep.title || '', poster, duration: durationSecs(ep.info),
     ...picker.get(),
   }));
   const next = $('#next');
@@ -537,7 +546,62 @@ function subsPicker(el, q) {
 // ---------- 6. Casten naar de Chromecast ----------
 
 let castCtx = null, player = null, ctrl = null;
-let seeking = false, lastSave = 0;
+let seeking = false, lastSave = 0, lastMedia = null;
+const SS_SUB = 'iptvcast.sub'; // gekozen ondertiteltaal ('off' = uit), blijft bij herladen of spoelen
+
+function nowInfo() {
+  try { return JSON.parse(sessionStorage.getItem(SS_NOW) || 'null'); } catch { return null; }
+}
+
+// Echte positie in de film: bij omzetting begint de tv op 0 vanaf het startpunt.
+function realTime() {
+  const now = nowInfo();
+  const off = now && now.conv && now.contentId === player?.mediaInfo?.contentId ? now.offset : 0;
+  return off + (player?.currentTime || 0);
+}
+
+function seekTo(T) {
+  if (!ctrl || !player?.mediaInfo) return;
+  T = Math.max(0, T);
+  const now = nowInfo();
+  if (now?.conv && now.contentId === player.mediaInfo.contentId) {
+    const rel = T - now.offset;
+    const have = player.duration || 0; // wat al omgezet is
+    if (rel >= 0 && rel <= have - 3) { player.currentTime = rel; ctrl.seek(); return; }
+    if (lastMedia && lastMedia.key === now.key) {
+      toast('Verder springen: de Beelink start opnieuw vanaf dat punt…', 6000);
+      castMedia({ ...lastMedia, start: Math.floor(T) });
+      return;
+    }
+    player.currentTime = Math.max(0, rel); ctrl.seek(); return;
+  }
+  player.currentTime = T; ctrl.seek();
+}
+
+// Zet de ondertitels aan in je voorkeurtaal (of de taal die je zelf koos via CC).
+async function autoSubs() {
+  const choice = sessionStorage.getItem(SS_SUB);
+  if (choice === 'off') return;
+  const prefs = choice ? [choice] : (S.langs || 'nl,en').split(',').map(x => x.trim()).filter(Boolean);
+  const TEXT = chrome.cast.media.TrackType.TEXT;
+  for (let i = 0; i < 30; i++) {
+    await new Promise(r => setTimeout(r, 500));
+    const ms = castCtx?.getCurrentSession()?.getMediaSession();
+    const tracks = (ms?.media?.tracks || []).filter(t => t.type === TEXT);
+    if (!tracks.length) continue;
+    let pick = null;
+    for (const l of prefs) {
+      pick = tracks.find(t => String(t.language || '').toLowerCase().startsWith(l) && !/sdh/i.test(t.name || ''))
+        || tracks.find(t => String(t.language || '').toLowerCase().startsWith(l));
+      if (pick) break;
+    }
+    if (!pick) return;
+    const others = (ms.activeTrackIds || []).filter(id => !tracks.some(t => t.trackId === id));
+    ms.editTracksInfo(new chrome.cast.media.EditTracksInfoRequest([...others, pick.trackId], trackStyle()),
+      () => toast(`Ondertitels: ${pick.name || langName(pick.language)}`), () => {});
+    return;
+  }
+}
 
 window.__onGCastApiAvailable = ok => { if (ok) initCast(); };
 
@@ -568,9 +632,11 @@ function trackStyle() {
 function mediaAttempts(m) {
   const type = MIME[m.ext] || 'video/mp4';
   if (S.home) {
-    return (m.live || m.ext === 'm3u8')
-      ? [{ url: homeUrl('/m3u8', m.url), type: MIME.m3u8, hls: true }]
-      : [{ url: homeUrl('/p', m.url), type }];
+    if (m.live || m.ext === 'm3u8') return [{ url: homeUrl('/m3u8', m.url), type: MIME.m3u8, hls: true }];
+    // De Beelink zet geluid (E-AC3 -> AAC) en ondertitels om, vanaf het gevraagde startpunt.
+    const start = Math.max(0, Math.floor(m.start || 0));
+    const url = `${homeUrl('/hls/play', m.url)}&start=${start}&langs=${enc(S.langs || 'nl,en')}`;
+    return [{ url, type: MIME.m3u8, hls: true, conv: true, offset: start }];
   }
   if (m.live || m.ext === 'm3u8') {
     return [
@@ -598,7 +664,7 @@ function buildRequest(m, a) {
   const p = imgUrl(m.poster);
   if (p) md.images = [new chrome.cast.Image(p)];
   mi.metadata = md;
-  if (m.subs?.length) {
+  if (m.subs?.length && !a.conv) {
     mi.tracks = m.subs.map((s, i) => {
       const t = new C.Track(i + 1, C.TrackType.TEXT);
       t.trackContentId = s.url;
@@ -612,8 +678,8 @@ function buildRequest(m, a) {
   mi.textTrackStyle = trackStyle();
   const req = new C.LoadRequest(mi);
   req.autoplay = true;
-  if (!m.live) req.currentTime = m.start || 0;
-  req.activeTrackIds = m.active ? [m.active] : [];
+  if (!m.live) req.currentTime = a.conv ? 0 : (m.start || 0);
+  req.activeTrackIds = (m.active && !a.conv) ? [m.active] : [];
   return req;
 }
 
@@ -632,10 +698,14 @@ async function castMedia(m) {
   const attempts = mediaAttempts(m);
   for (let i = 0; i < attempts.length; i++) {
     const a = attempts[i];
-    toast(i ? 'Opnieuw proberen via de tussenschakel…' : 'Versturen naar tv…', 8000);
+    toast(a.conv ? 'De Beelink zet de film klaar…' : i ? 'Opnieuw proberen via de tussenschakel…' : 'Versturen naar tv…', 10000);
     try {
       await session.loadMedia(buildRequest(m, a));
-      sessionStorage.setItem(SS_NOW, JSON.stringify({ key: m.key, contentId: a.url }));
+      sessionStorage.setItem(SS_NOW, JSON.stringify({
+        key: m.key, contentId: a.url, conv: !!a.conv, offset: a.offset || 0, total: m.duration || 0,
+      }));
+      lastMedia = m;
+      if (a.conv) autoSubs();
       toast(`Speelt af op ${session.getCastDevice()?.friendlyName || 'tv'}`);
       return;
     } catch (e) {
@@ -662,24 +732,27 @@ function onPlayerChange() {
   mini.hidden = !mi;
   document.body.classList.toggle('has-mini', !!mi);
   if (!mi) return;
-  const live = mi.streamType === chrome.cast.media.StreamType.LIVE || !player.duration;
+  const now = nowInfo();
+  const mine = !!now && now.contentId === mi.contentId;
+  const conv = mine && now.conv;
+  const live = !conv && (mi.streamType === chrome.cast.media.StreamType.LIVE || !player.duration);
+  const real = realTime();
+  const total = conv ? (now.total || now.offset + (player.duration || 0)) : player.duration;
   $('#mini-title').textContent = mi.metadata?.title || 'Speelt af op tv';
   const imgEl = $('#mini-img');
   const src = mi.metadata?.images?.[0]?.url || '';
   if (imgEl.getAttribute('src') !== src) imgEl.setAttribute('src', src);
   const state = player.playerState;
   $('#mini-time').textContent = state === 'BUFFERING' ? 'Bufferen…'
-    : live ? 'Live' : `${fmt(player.currentTime)} / ${fmt(player.duration)}`;
+    : live ? 'Live' : `${fmt(real)} / ${fmt(total)}`;
   const seek = $('#mini-seek');
   seek.disabled = live;
-  if (!live) { seek.max = Math.floor(player.duration); if (!seeking) seek.value = Math.floor(player.currentTime); }
+  if (!live) { seek.max = Math.floor(total || 0); if (!seeking) seek.value = Math.floor(real); }
   $('#mini [data-act=play]').textContent = player.isPaused ? '▶' : '⏸';
 
   // Onthoud waar je bent (voor "verder kijken")
-  let now = null;
-  try { now = JSON.parse(sessionStorage.getItem(SS_NOW) || 'null'); } catch { /* leeg */ }
-  if (now && now.contentId === mi.contentId && !live && player.currentTime > 5 && Date.now() - lastSave > 5000) {
-    savePos(now.key, player.currentTime, player.duration);
+  if (mine && !live && real > 5 && Date.now() - lastSave > 5000) {
+    savePos(now.key, real, total);
     lastSave = Date.now();
   }
 }
@@ -689,19 +762,16 @@ $('#mini').addEventListener('click', e => {
   if (!act || !ctrl) return;
   if (act === 'play') ctrl.playOrPause();
   if (act === 'stop') ctrl.stop();
-  if (act === 'back' || act === 'fwd') {
-    player.currentTime = Math.max(0, player.currentTime + (act === 'back' ? -10 : 30));
-    ctrl.seek();
-  }
+  if (act === 'back' || act === 'fwd') seekTo(realTime() + (act === 'back' ? -10 : 30));
   if (act === 'vol-' || act === 'vol+') {
     player.volumeLevel = clamp((player.volumeLevel || 0) + (act === 'vol+' ? 0.05 : -0.05), 0, 1);
     ctrl.setVolumeLevel();
   }
   if (act === 'cc') openTracks();
 });
-$('#mini-seek').addEventListener('input', () => { seeking = true; $('#mini-time').textContent = `${fmt(+$('#mini-seek').value)} / ${fmt(player?.duration)}`; });
+$('#mini-seek').addEventListener('input', () => { seeking = true; $('#mini-time').textContent = `${fmt(+$('#mini-seek').value)} / ${fmt(+$('#mini-seek').max)}`; });
 $('#mini-seek').addEventListener('change', () => {
-  if (ctrl) { player.currentTime = +$('#mini-seek').value; ctrl.seek(); }
+  seekTo(+$('#mini-seek').value);
   seeking = false;
 });
 
@@ -732,6 +802,8 @@ function openTracks() {
     const o = e.target.closest('[data-id]');
     if (o) {
       const id = o.dataset.id;
+      const tr = tracks.find(t => String(t.trackId) === id);
+      sessionStorage.setItem(SS_SUB, id ? String(tr?.language || '').toLowerCase().slice(0, 2) || 'off' : 'off');
       apply(id ? [...otherIds, +id] : otherIds, id ? 'Ondertitels aan' : 'Ondertitels uit');
       return closeSheet();
     }

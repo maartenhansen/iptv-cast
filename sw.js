@@ -1,7 +1,7 @@
 // Service worker: laat de app openen als een echte app, ook bij slechte verbinding.
 // Strategie: eerst het netwerk (altijd de nieuwste versie), anders de opgeslagen kopie.
 // Alleen de eigen app-bestanden; streams en lijsten worden nooit opgeslagen.
-const CACHE = 'iptv-cast-v1';
+const CACHE = 'iptv-cast-v2';
 const FILES = ['./', './index.html', './styles.css', './app.js', './manifest.webmanifest',
   './icons/icon-192.png', './icons/icon-512.png'];
 
