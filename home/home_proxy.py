@@ -196,6 +196,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         u = urllib.parse.urlparse(self.path)
         q = urllib.parse.parse_qs(u.query)
+        if u.path not in ("/", "/p") and not u.path.endswith((".ts", ".vtt")):
+            log(f"verzoek {self.command} {u.path} van {self.client_address[0]}")
         if u.path == "/":
             return self.reply(200, json.dumps({"ok": True, "app": "iptv-cast-home", "vpn": vpn_ok(),
                                                "ffmpeg": bool(convert.FFMPEG)}), "application/json")
