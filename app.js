@@ -17,7 +17,7 @@ const LS_POS = 'iptvcast.positions';   // waar je gebleven was, per film/aflever
 const LS_LASTCAT = 'iptvcast.lastcat'; // laatst gekozen categorie per tab
 const SS_NOW = 'iptvcast.now';         // wat er nu op de tv speelt
 
-const DEFAULTS = { server: '', user: '', pass: '', worker: '', key: '', langs: 'nl,en', subScale: 1, vodMode: 'auto' };
+const DEFAULTS = { server: '', user: '', pass: '', worker: '', key: '', langs: 'nl,en', subScale: 1, vodMode: 'auto', home: '' };
 
 const store = {
   get(k, d) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch { return d; } },
@@ -73,6 +73,8 @@ function workerUrl(path, params = {}) {
 }
 const proxied = url => workerUrl('/p', { url });
 const playlistProxied = url => workerUrl('/m3u8', { url });
+// Thuis-tussenschakel (Beelink met VPN): de Chromecast haalt de streams daar op.
+const homeUrl = (path, url) => `${trim(S.home)}${path}?${new URLSearchParams({ k: S.key, url })}`;
 
 // Afbeeldingen op http mogen niet in een https-app: die laten we via de Worker lopen.
 function imgUrl(url) {
@@ -413,8 +415,10 @@ async function viewSettings(params) {
         <option value="0.8">Klein</option><option value="1">Normaal</option>
         <option value="1.3">Groot</option><option value="1.6">Extra groot</option></select></label>
 
-      <h3>Films en series</h3>
-      <label>Afspelen<select name="vodMode">
+      <h3>Streams</h3>
+      <label>Thuis-tussenschakel (Beelink met VPN)<input name="home" type="url" inputmode="url" placeholder="http://192.168.0.242:8030" autocapitalize="off"></label>
+      <p class="muted" style="margin:0;font-size:13px">Ingevuld? Dan haalt de Chromecast alle streams via de Beelink op. Leeg laten om de instelling hieronder te gebruiken.</p>
+      <label>Films en series afspelen (zonder Beelink)<select name="vodMode">
         <option value="auto">Automatisch (eerst rechtstreeks, anders via tussenschakel)</option>
         <option value="direct">Altijd rechtstreeks</option>
         <option value="proxy">Altijd via tussenschakel</option></select></label>
@@ -440,6 +444,8 @@ async function viewSettings(params) {
     v.server = trim(v.server); v.worker = trim(v.worker);
     if (v.server && !/^https?:\/\//i.test(v.server)) v.server = 'http://' + v.server;
     if (v.worker && !/^https?:\/\//i.test(v.worker)) v.worker = 'https://' + v.worker;
+    v.home = trim(v.home);
+    if (v.home && !/^https?:\/\//i.test(v.home)) v.home = 'http://' + v.home;
     v.langs = String(v.langs || 'nl,en').toLowerCase().replace(/\s+/g, '');
     v.subScale = +v.subScale || 1;
     S = { ...S, ...v };
@@ -561,6 +567,11 @@ function trackStyle() {
 // Welke adressen proberen we, in welke volgorde?
 function mediaAttempts(m) {
   const type = MIME[m.ext] || 'video/mp4';
+  if (S.home) {
+    return (m.live || m.ext === 'm3u8')
+      ? [{ url: homeUrl('/m3u8', m.url), type: MIME.m3u8, hls: true }]
+      : [{ url: homeUrl('/p', m.url), type }];
+  }
   if (m.live || m.ext === 'm3u8') {
     return [
       { url: playlistProxied(m.url), type: MIME.m3u8, hls: true },
