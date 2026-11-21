@@ -13,7 +13,8 @@ import os, socket, subprocess, sys, threading, time
 
 HOME = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HOME)
-LOGS = os.path.join(HOME, "logs")
+DEV = "--dev" in sys.argv  # ontwikkelversie: poort 8031, eigen logs, geen eigen tunnel (zie start_dev.pyw)
+LOGS = os.path.join(HOME, "logs-dev" if DEV else "logs")
 CLOUDFLARED = r"C:\Program Files (x86)\cloudflared\cloudflared.exe"
 NO_WINDOW = 0x08000000  # CREATE_NO_WINDOW
 MAX_LOG = 5 * 1024 * 1024
@@ -42,21 +43,21 @@ def single_instance():
     """Voorkomt dat het opstartprogramma twee keer draait."""
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
-        s.bind(("127.0.0.1", 8039))
+        s.bind(("127.0.0.1", 8038 if DEV else 8039))
         s.listen(1)
         return s
     except OSError:
         return None
 
 
-def keep_running(name, cmd, log_name):
+def keep_running(name, cmd, log_name, env=None):
     delay = 5
     while True:
         out = logfile(log_name)
         note(f"{name} starten")
         started = time.time()
         try:
-            p = subprocess.Popen(cmd, cwd=ROOT, stdout=out, stderr=subprocess.STDOUT,
+            p = subprocess.Popen(cmd, cwd=ROOT, stdout=out, stderr=subprocess.STDOUT, env=env,
                                  stdin=subprocess.DEVNULL, creationflags=NO_WINDOW)
             code = p.wait()
             note(f"{name} gestopt (code {code})")
@@ -74,14 +75,17 @@ def main():
         note("draait al: tweede start genegeerd")
         return
     py = sys.executable  # pythonw.exe
-    jobs = [("tussenschakel", [py, "-u", os.path.join(HOME, "home_proxy.py")], "tussenschakel.log")]
+    env = dict(os.environ, IPTV_HOME_PORT="8031") if DEV else None
+    jobs = [("tussenschakel", [py, "-u", os.path.join(HOME, "home_proxy.py")], "tussenschakel.log", env)]
     token = os.path.join(HOME, "tunnel.token")
-    if os.path.exists(CLOUDFLARED) and os.path.exists(token):
-        jobs.append(("tunnel", [CLOUDFLARED, "tunnel", "--no-autoupdate", "run", "--token-file", token], "tunnel.log"))
+    if DEV:
+        note("ontwikkelversie: poort 8031, de tunnel van de productie wordt gedeeld")
+    elif os.path.exists(CLOUDFLARED) and os.path.exists(token):
+        jobs.append(("tunnel", [CLOUDFLARED, "tunnel", "--no-autoupdate", "run", "--token-file", token], "tunnel.log", None))
     else:
         note("tunnel niet gestart: cloudflared of home\\tunnel.token ontbreekt")
-    for name, cmd, log_name in jobs:
-        threading.Thread(target=keep_running, args=(name, cmd, log_name), daemon=True).start()
+    for name, cmd, log_name, job_env in jobs:
+        threading.Thread(target=keep_running, args=(name, cmd, log_name, job_env), daemon=True).start()
     while True:
         time.sleep(3600)
 

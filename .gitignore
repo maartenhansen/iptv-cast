@@ -7,3 +7,4 @@ worker/.cloudflare/
 home/tmp/
 home/tunnel.token
 home/logs/
+home/logs-dev/
