@@ -6,3 +6,4 @@ worker/.cloudflare/
 .dev.vars*
 home/tmp/
 home/tunnel.token
+home/logs/
