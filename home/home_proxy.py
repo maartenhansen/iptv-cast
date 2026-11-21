@@ -245,7 +245,8 @@ class Handler(BaseHTTPRequestHandler):
         # ffmpeg leest via onze eigen /p-route: zo gelden alle beveiligingen ook voor ffmpeg
         input_url = f"http://127.0.0.1:{PORT}/p?" + urllib.parse.urlencode({"k": key, "url": target})
         try:
-            sess = convert.get_or_start(target, start, input_url, log)
+            langs = [x for x in re.split(r"[,\s]+", q.get("langs", ["nl,en"])[0].lower()) if re.fullmatch(r"[a-z]{2}", x)]
+            sess = convert.get_or_start(target, start, input_url, log, langs)
         except Exception as e:
             log(f"omzetting mislukt: {e}")
             return self.reply(502, json.dumps({"error": f"Omzetting mislukt: {e}"}), "application/json")

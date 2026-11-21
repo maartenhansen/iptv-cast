@@ -16,7 +16,7 @@ import glob, json, os, re, shutil, subprocess, tempfile, threading, time, uuid
 
 ROOT = os.path.join(tempfile.gettempdir(), "iptvcast-hls")
 IDLE_SECONDS = 90
-MAX_SUBS = 4
+MAX_SUBS = 3
 
 TEXT_SUBS = {"subrip", "srt", "ass", "ssa", "mov_text", "webvtt", "text"}
 CAST_AUDIO = {"aac", "mp3"}
@@ -80,7 +80,7 @@ def probe_streams(input_url, timeout=45):
     return json.loads(r.stdout or "{}").get("streams", [])
 
 
-def build_command(sess, input_url, streams):
+def build_command(sess, input_url, streams, langs=()):
     v = [s for s in streams if s.get("codec_type") == "video"]
     a = [s for s in streams if s.get("codec_type") == "audio"]
     if not v:
@@ -89,7 +89,12 @@ def build_command(sess, input_url, streams):
     audio = next((s for s in a if (s.get("disposition") or {}).get("default")), a[0] if a else None)
     a_idx = a.index(audio) if audio else None
     subs = [s for s in streams if s.get("codec_type") == "subtitle" and (s.get("codec_name") or "").lower() in TEXT_SUBS]
-    subs = subs[:MAX_SUBS]
+    def lang_of(s):
+        t = str((s.get("tags") or {}).get("language", "")).lower()
+        return LANG2.get(t, t[:2])
+    # eerst je voorkeurtalen (in volgorde), dan de rest
+    order = {l: i for i, l in enumerate(langs)}
+    subs = sorted(subs, key=lambda s: order.get(lang_of(s), len(order)))[:MAX_SUBS]
     s_rel = [[x for x in streams if x.get("codec_type") == "subtitle"].index(s) for s in subs]
 
     audio_codec = ["-c:a", "copy"] if audio and (audio.get("codec_name") or "").lower() in CAST_AUDIO and int(audio.get("channels") or 2) <= 2 \
@@ -120,6 +125,8 @@ def build_command(sess, input_url, streams):
 
     cmd = [FFMPEG, "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
            "-rw_timeout", "30000000", "-reconnect", "1", "-reconnect_on_network_error", "1", "-reconnect_delay_max", "5",
+           # niet sneller lezen dan nodig: vlotte start, daarna 1,5x afspeelsnelheid
+           "-readrate", "1.5", "-readrate_initial_burst", "45",
            "-ss", str(max(0, int(sess.start))), "-i", input_url,
            *maps, "-c:v", "copy", *audio_codec]
     if subs:
@@ -131,7 +138,7 @@ def build_command(sess, input_url, streams):
     return cmd
 
 
-def get_or_start(target_url, start, input_url, log):
+def get_or_start(target_url, start, input_url, log, langs=()):
     """Geeft een lopende omzetting voor deze film+startpunt, of start een nieuwe (en stopt de oude)."""
     if not FFMPEG or not FFPROBE:
         raise RuntimeError("ffmpeg niet gevonden op de Beelink")
@@ -148,7 +155,7 @@ def get_or_start(target_url, start, input_url, log):
         os.makedirs(sess.dir, exist_ok=True)
         _sessions[sess.sid] = sess
     streams = probe_streams(input_url)
-    cmd = build_command(sess, input_url, streams)
+    cmd = build_command(sess, input_url, streams, langs)
     errlog = open(os.path.join(sess.dir, "ffmpeg.log"), "w", encoding="utf-8", errors="replace")
     flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
     sess.proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=errlog, creationflags=flags)
