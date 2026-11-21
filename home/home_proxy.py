@@ -10,10 +10,13 @@ Endpoints (allemaal met ?k=<APP_KEY>, dezelfde sleutel als de Worker):
     /            status (zonder sleutel)
     /m3u8?url=   HLS-afspeellijst, met alle links herschreven via deze Beelink
     /p?url=      bestand doorgeven (videostukjes, films), met vooruit/terugspoelen
+    /hls/play?url=&start=   film omzetten (geluid -> AAC, ondertitels -> WebVTT) als HLS
+    /hls/<id>/<bestand>     stukjes van die omzetting (id is geheim, geen sleutel nodig)
 
 Starten:  py home/home_proxy.py
 """
-import ipaddress, json, os, re, socket, sys, threading, time, urllib.error, urllib.parse, urllib.request
+import atexit, ipaddress, json, os, re, socket, sys, threading, time, urllib.error, urllib.parse, urllib.request
+import convert
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 PORT = int(os.environ.get("IPTV_HOME_PORT", "8030"))
@@ -97,6 +100,8 @@ def check_target(url):
     u = urllib.parse.urlparse(url)
     if u.scheme not in ("http", "https"):
         raise Blocked("Alleen http/https is toegestaan")
+    if os.environ.get("IPTV_ALLOW_PRIVATE") == "1":
+        return  # enkel voor lokale tests met een testfilm
     if not is_public_host(u.hostname):
         raise Blocked("Adres binnen het thuisnetwerk (of onbekend) geweigerd")
 
@@ -191,7 +196,11 @@ class Handler(BaseHTTPRequestHandler):
         u = urllib.parse.urlparse(self.path)
         q = urllib.parse.parse_qs(u.query)
         if u.path == "/":
-            return self.reply(200, json.dumps({"ok": True, "app": "iptv-cast-home", "vpn": vpn_ok()}), "application/json")
+            return self.reply(200, json.dumps({"ok": True, "app": "iptv-cast-home", "vpn": vpn_ok(),
+                                               "ffmpeg": bool(convert.FFMPEG)}), "application/json")
+        m = re.fullmatch(r"/hls/([0-9a-f]{32})/([^/]+)", u.path)
+        if m:
+            return self.hls_file(m.group(1), m.group(2))
         if not APP_KEY or q.get("k", [""])[0] != APP_KEY:
             return self.reply(403, '{"error":"Verkeerde sleutel"}', "application/json")
         target = q.get("url", [""])[0]
@@ -211,6 +220,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.playlist(target, q["k"][0])
             if u.path == "/p":
                 return self.passthrough(target)
+            if u.path == "/hls/play":
+                return self.hls_play(target, q)
         except Blocked as e:
             log(f"geweigerd: {e}")
             return self.reply(403, json.dumps({"error": str(e)}), "application/json")
@@ -223,6 +234,44 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 return
         self.reply(404, '{"error":"Onbekend adres"}', "application/json")
+
+    # ---- omzetting met ffmpeg (geluid en ondertitels voor de Chromecast) ----
+    def hls_play(self, target, q):
+        try:
+            start = max(0, int(float(q.get("start", ["0"])[0] or 0)))
+        except ValueError:
+            start = 0
+        key = q["k"][0]
+        # ffmpeg leest via onze eigen /p-route: zo gelden alle beveiligingen ook voor ffmpeg
+        input_url = f"http://127.0.0.1:{PORT}/p?" + urllib.parse.urlencode({"k": key, "url": target})
+        try:
+            sess = convert.get_or_start(target, start, input_url, log)
+        except Exception as e:
+            log(f"omzetting mislukt: {e}")
+            return self.reply(502, json.dumps({"error": f"Omzetting mislukt: {e}"}), "application/json")
+        if not convert.wait_ready(sess):
+            log(f"omzetting kwam niet op gang: {redact(sess.error) or '?'}")
+            return self.reply(502, json.dumps({"error": "Omzetting kwam niet op gang"}), "application/json")
+        host = self.headers.get("Host") or f"{lan_ip()}:{PORT}"
+        body = convert.master_playlist(sess, f"http://{host}/hls/{sess.sid}")
+        self.reply(200, body, "application/vnd.apple.mpegurl")
+
+    def hls_file(self, sid, name):
+        path, sess = convert.file_for(sid, name)
+        if not path:
+            return self.reply(404, '{"error":"Niet (meer) beschikbaar"}', "application/json")
+        with open(path, "rb") as f:
+            data = f.read()
+        if name.endswith(".vtt"):
+            data, ctype = convert.vtt_with_map(data), "text/vtt; charset=utf-8"
+        elif name.endswith(".m3u8"):
+            ctype = "application/vnd.apple.mpegurl"
+        else:
+            ctype = "video/mp2t"
+        try:
+            self.reply(200, data, ctype)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass
 
     # ---- HLS-afspeellijst ----
     def playlist(self, target, key):
@@ -329,4 +378,13 @@ if __name__ == "__main__":
     log("Laat dit venster open. Zet de VPN aan op deze pc.")
     check_country()
     threading.Thread(target=vpn_watch, daemon=True).start()
-    srv.serve_forever()
+    threading.Thread(target=convert.reaper, args=(log,), daemon=True).start()
+    atexit.register(convert.cleanup_all)
+    if not convert.FFMPEG:
+        log("LET OP: ffmpeg niet gevonden: films zonder omzetting (geen geluid bij E-AC3)")
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        convert.cleanup_all()
