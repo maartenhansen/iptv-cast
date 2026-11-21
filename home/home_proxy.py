@@ -378,6 +378,7 @@ if __name__ == "__main__":
     log("Laat dit venster open. Zet de VPN aan op deze pc.")
     check_country()
     threading.Thread(target=vpn_watch, daemon=True).start()
+    convert.cleanup_all()  # resten van een vorige keer opruimen
     threading.Thread(target=convert.reaper, args=(log,), daemon=True).start()
     atexit.register(convert.cleanup_all)
     if not convert.FFMPEG:
