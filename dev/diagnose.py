@@ -10,10 +10,10 @@ import json, os, re, socket, time, urllib.parse, urllib.request, urllib.error
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlencode
 
-PORT = 8020
+PORT = 8021
 HERE = os.path.dirname(os.path.abspath(__file__))
 SECRETS = os.path.join(HERE, "..", "worker", "secrets.env")
-DEFAULT_WORKER = "https://iptv-cast.hansen-tools.workers.dev"
+DEFAULT_WORKER = "https://iptv-cast-dev.hansen-tools.workers.dev"
 
 UAS = {
     "VLC (zoals de Worker)": "VLC/3.0.20 LibVLC/3.0.20",
@@ -193,7 +193,7 @@ def live_direct(url, secrets):
 
 
 
-HOME = "http://127.0.0.1:8030"
+HOME = "http://127.0.0.1:8031"
 
 
 def home_up():

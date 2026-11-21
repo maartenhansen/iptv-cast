@@ -222,7 +222,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(403, json.dumps({"error": str(e)}), "application/json")
         try:
             if u.path == "/m3u8":
-                return self.playlist(target, q["k"][0])
+                return self.playlist(target, q["k"][0], q.get("base", [""])[0])
             if u.path == "/p":
                 return self.passthrough(target)
             if u.path == "/hls/play":
@@ -320,7 +320,7 @@ class Handler(BaseHTTPRequestHandler):
             pass
 
     # ---- HLS-afspeellijst ----
-    def playlist(self, target, key):
+    def playlist(self, target, key, worker_base=""):
         req = urllib.request.Request(target, headers={"User-Agent": UA})
         try:
             with OPENER.open(req, timeout=20) as r:
@@ -336,6 +336,10 @@ class Handler(BaseHTTPRequestHandler):
         if not text.lstrip().startswith("#EXTM3U"):
             return self.reply(502, '{"error":"Geen geldige HLS-afspeellijst"}', "application/json")
         me = f"http://{self.headers.get('Host') or f'{lan_ip()}:{PORT}'}"
+        # Kijken op de gsm: de gsm (https) haalt alles via de Worker op, dus links naar de Worker.
+        # Alleen een workers.dev-adres wordt aanvaard.
+        if re.fullmatch(r"https://[a-z0-9-]+(\.[a-z0-9-]+)*\.workers\.dev", worker_base or ""):
+            me = worker_base
 
         def wrap(link):
             absu = urllib.parse.urljoin(base, link)
