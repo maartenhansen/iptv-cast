@@ -231,6 +231,50 @@ def via_home(live, film, ext, key, secrets):
     return rows
 
 
+
+SEPARATOR = re.compile(r"^[\s#*=\-_|~.]{3,}|[#*=]{3,}")
+
+
+def pick_channels(api, cats, secrets, want=2):
+    """Kies echte zenders (geen scheidingsregels zoals '##### NL #####') uit een categorie met genoeg zenders."""
+    for c in cats[:15]:
+        try:
+            lst = get_json(api(action="get_live_streams", category_id=c["category_id"]), secrets)
+        except Exception:
+            continue
+        real = [x for x in lst if x.get("stream_id") and not SEPARATOR.search(x.get("name", ""))]
+        if len(real) >= want:
+            return real[:want], c.get("category_name", "?")
+    return [], "?"
+
+
+def live_variants(server, user, pw, api, cats, secrets):
+    rows = []
+    enc = urllib.parse.quote
+    chans, catname = pick_channels(api, cats, secrets)
+    if not chans:
+        return [{"via": "Live-varianten", "test": "Zenders kiezen", "status": "fout", "info": "geen bruikbare zenders gevonden", "ms": 0}]
+    u, p = enc(user, safe=""), enc(pw, safe="")
+    for n, ch in enumerate(chans):
+        sid = ch["stream_id"]
+        variants = [("/live/…/ID.m3u8", f"{server}/live/{u}/{p}/{sid}.m3u8"),
+                    ("/live/…/ID.ts", f"{server}/live/{u}/{p}/{sid}.ts")]
+        if n == 0:
+            variants.append(("/…/ID (oud formaat)", f"{server}/{u}/{p}/{sid}"))
+        for label, url in variants:
+            time.sleep(2)
+            code, ctype, head, ms, err = peek(url, UAS["VLC (zoals de Worker)"], secrets, rng=False)
+            if head.lstrip().startswith(b"#EXTM3U"):
+                what = "HLS-afspeellijst ✓"
+            elif head[:1] == b"G" or "mp2t" in (ctype or ""):
+                what = f"videostroom ✓ ({ctype or '?'})"
+            else:
+                what = err or summarize(head, ctype, secrets)
+            rows.append({"via": "Live-varianten", "test": f"{ch.get('name','?')[:30]} · {label}", "status": code, "info": what, "ms": ms})
+    rows.insert(0, {"via": "Live-varianten", "test": "Gekozen categorie", "status": "OK", "info": catname[:60], "ms": 0})
+    return rows
+
+
 def flow_row(test, status, info, ms=0):
     return {"via": "App-stappen (Worker)", "test": test, "status": status, "info": info, "ms": ms}
 
@@ -251,11 +295,13 @@ def app_flow(server, user, pw, worker, key):
         cats[kind] = data if isinstance(data, list) else []
         r["info"] = f"{len(cats[kind])} categorieën" if r["status"] == 200 and cats[kind] else r["info"]
         rows.append({"via": "App-stappen (Worker)", "test": f"Lijst: {action}", **r})
+    rows += live_variants(server, user, pw, api, cats["live"], secrets)
+    time.sleep(3)
     enc = urllib.parse.quote
     # 2. Live: eerste zender, rechtstreeks vanaf thuis (via de Worker weigert de provider streams)
     try:
-        streams = get_json(api(action="get_live_streams", category_id=cats["live"][0]["category_id"]), secrets) if cats["live"] else []
-        st = streams[0] if streams else None
+        chosen, _ = pick_channels(api, cats["live"], secrets, want=1)
+        st = chosen[0] if chosen else None
     except Exception as e:
         st, streams = None, []
         rows.append(flow_row("Live: zenderlijst", "fout", mask(str(e), secrets)))
@@ -309,6 +355,120 @@ def run(server, user, pw, worker):
     return {"server": server, "results": out, **flags}
 
 
+# ---------- Formaatcontrole van een film of serie (ffprobe) ----------
+import glob, shutil, subprocess
+
+_lists = {}
+
+
+def find_ffprobe():
+    exe = shutil.which("ffprobe")
+    if exe:
+        return exe
+    la = os.environ.get("LOCALAPPDATA", "")
+    for pat in (os.path.join(la, "Microsoft", "WinGet", "Links", "ffprobe.exe"),
+                os.path.join(la, "Microsoft", "WinGet", "Packages", "Gyan.FFmpeg*", "*", "bin", "ffprobe.exe")):
+        hits = glob.glob(pat)
+        if hits:
+            return hits[0]
+    return None
+
+
+def home_json(server, user, pw, **params):
+    """Rechtstreeks vanaf deze pc (met VPN), niet via de Worker."""
+    url = f"{server}/player_api.php?" + urlencode({"username": user, "password": pw, **params})
+    req = urllib.request.Request(url, headers={"User-Agent": UAS["VLC (zoals de Worker)"]})
+    with urllib.request.urlopen(req, timeout=60) as r:
+        return json.load(r)
+
+
+def norm_server(server):
+    server = server.strip().rstrip("/")
+    return server if re.match(r"^https?://", server) else "http://" + server
+
+
+def search(server, user, pw, q):
+    server = norm_server(server)
+    key = (server, user)
+    if key not in _lists:
+        _lists[key] = {"vod": home_json(server, user, pw, action="get_vod_streams"),
+                       "series": home_json(server, user, pw, action="get_series")}
+    words = [w for w in re.split(r"\s+", q.lower().strip()) if w]
+    out = []
+    for kind in ("vod", "series"):
+        for it in _lists[key][kind]:
+            name = str(it.get("name", ""))
+            if all(w in name.lower() for w in words):
+                out.append({"kind": kind, "id": it.get("stream_id") if kind == "vod" else it.get("series_id"),
+                            "ext": it.get("container_extension", ""), "name": name})
+                if len(out) >= 15:
+                    return out
+    return out
+
+
+TEXT_SUBS = {"subrip", "srt", "ass", "ssa", "mov_text", "webvtt", "text"}
+IMAGE_SUBS = {"hdmv_pgs_subtitle", "dvd_subtitle", "dvb_subtitle", "xsub"}
+CAST_AUDIO = {"aac", "mp3", "opus", "vorbis", "flac"}
+CAST_VIDEO = {"h264": "ja", "vp8": "ja", "vp9": "ja", "hevc": "enkel Chromecast met Google TV",
+              "av1": "enkel nieuwere modellen"}
+
+
+def probe(server, user, pw, kind, item_id, ext):
+    server = norm_server(server)
+    secrets = [user, pw]
+    exe = find_ffprobe()
+    if not exe:
+        return {"error": "ffprobe niet gevonden. Is ffmpeg geïnstalleerd? Herstart dan het testschermpje."}
+    enc = urllib.parse.quote
+    if kind == "series":
+        info = home_json(server, user, pw, action="get_series_info", series_id=item_id)
+        eps = info.get("episodes") or {}
+        if not eps:
+            return {"error": "Geen afleveringen gevonden"}
+        season = sorted(eps.keys(), key=lambda x: int(x) if str(x).isdigit() else 0)[0]
+        ep = eps[season][0]
+        e_ext = ep.get("container_extension") or "mkv"
+        url = f"{server}/series/{enc(user, safe='')}/{enc(pw, safe='')}/{ep['id']}.{e_ext}"
+        label = f"Seizoen {season}, aflevering {ep.get('episode_num', 1)} (.{e_ext})"
+    else:
+        url = f"{server}/movie/{enc(user, safe='')}/{enc(pw, safe='')}/{item_id}.{ext or 'mkv'}"
+        label = f"Film (.{ext})"
+    cmd = [exe, "-v", "error", "-user_agent", UAS["VLC (zoals de Worker)"], "-rw_timeout", "20000000",
+           "-probesize", "5000000", "-analyzeduration", "5000000",
+           "-show_streams", "-show_format", "-of", "json", url]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=60, encoding="utf-8", errors="replace")
+    except subprocess.TimeoutExpired:
+        return {"error": "ffprobe duurde te lang (server antwoordt niet?)"}
+    if r.returncode != 0:
+        return {"error": mask(r.stderr.strip()[:300] or "ffprobe mislukt", secrets)}
+    d = json.loads(r.stdout or "{}")
+    rows = []
+    for st in d.get("streams", []):
+        t, c = st.get("codec_type"), (st.get("codec_name") or "?").lower()
+        tags = st.get("tags", {}) or {}
+        if t == "video":
+            ok = CAST_VIDEO.get(c, "nee")
+            detail = f"{st.get('width')}x{st.get('height')} {st.get('profile') or ''}".strip()
+        elif t == "audio":
+            ok = "ja" if c in CAST_AUDIO else "NEE: moet omgezet worden naar AAC"
+            detail = f"{st.get('channels', '?')} kanalen {st.get('channel_layout') or ''}".strip()
+        elif t == "subtitle":
+            ok = ("niet ingebouwd, maar om te zetten (tekst)" if c in TEXT_SUBS
+                  else "niet ingebouwd, en BEELD-ondertitel: moeilijk" if c in IMAGE_SUBS else "onbekend")
+            detail = ""
+        else:
+            continue
+        flags = [k for k, v in (st.get("disposition") or {}).items() if v and k in ("default", "forced")]
+        rows.append({"type": {"video": "Beeld", "audio": "Geluid", "subtitle": "Ondertitel"}[t], "codec": c,
+                     "lang": tags.get("language", ""), "title": tags.get("title", "")[:40], "detail": detail,
+                     "flags": ", ".join(flags), "cast": ok})
+    fmt = d.get("format", {}) or {}
+    return {"label": label, "container": fmt.get("format_name", "?"),
+            "duration": round(float(fmt.get("duration", 0) or 0) / 60), "streams": rows}
+
+
+
 PAGE = """<!doctype html><html lang="nl"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>IPTV-test</title>
 <style>
@@ -336,6 +496,16 @@ th{color:var(--m);font-weight:500} .ok{color:var(--ok);font-weight:700} .bad{col
 </form>
 <div id="verdict" hidden></div>
 <table id="t" hidden><thead><tr><th>Via</th><th>Test</th><th>Resultaat</th><th>Details</th></tr></thead><tbody></tbody></table>
+<section id="fmt" style="margin-top:28px">
+<h2 style="font-size:18px">Formaat van een film of serie</h2>
+<p>Vul eerst de gegevens hierboven in en zet je VPN aan. Er wordt maar een klein stukje van het bestand gelezen.</p>
+<form id="sf" style="grid-template-columns:1fr auto;align-items:end">
+<label>Naam (of een deel ervan)<input name="q" placeholder="bv. Primetime" required></label>
+<button style="padding:0 18px">Zoeken</button>
+</form>
+<div id="hits" style="display:grid;gap:6px;margin-top:10px"></div>
+<div id="probe"></div>
+</section>
 </main><script>
 const f=document.getElementById('f'),tb=document.querySelector('#t tbody');
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -366,6 +536,23 @@ function verdict(rs,d){const v=document.getElementById('verdict');v.hidden=false
  if(wOk&&wStream.some(bad)) msg='Inloggen en lijsten werken via de Worker, maar streams via de Worker worden geweigerd. '
    +(direct.length&&!direct.some(bad)?'Rechtstreeks vanaf thuis werken de streams wel.':'Ook rechtstreeks lukt niet alles (zie tabel).');
  v.textContent=net+msg;}
+const creds=()=>{const d=Object.fromEntries(new FormData(f));return {server:d.server,user:d.user,pw:d.pw}};
+document.getElementById('sf').onsubmit=async e=>{e.preventDefault();const hits=document.getElementById('hits');
+ hits.innerHTML='<p>Zoeken… (de eerste keer duurt dit even: alle lijsten worden geladen)</p>';document.getElementById('probe').innerHTML='';
+ try{const r=await fetch('/search',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...creds(),q:new FormData(e.target).get('q')})});
+  const d=await r.json(); if(d.error) throw new Error(d.error);
+  hits.innerHTML=d.length?d.map((x,i)=>'<button type="button" data-i="'+i+'" style="text-align:left;padding:0 12px;background:var(--s);border:1px solid var(--l)">'+(x.kind==='vod'?'🎬 ':'📺 ')+esc(x.name)+(x.ext?' <small>(.'+esc(x.ext)+')</small>':'')+'</button>').join(''):'<p>Niets gevonden.</p>';
+  hits.onclick=ev=>{const b=ev.target.closest('[data-i]');if(b)probe(d[+b.dataset.i])};
+ }catch(err){hits.innerHTML='<p class="bad">'+esc(err.message)+'</p>'}};
+async function probe(x){const pr=document.getElementById('probe');pr.innerHTML='<p>Formaat nakijken…</p>';
+ try{const r=await fetch('/probe',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...creds(),kind:x.kind,id:x.id,ext:x.ext})});
+  const d=await r.json(); if(d.error) throw new Error(d.error);
+  pr.innerHTML='<p><b>'+esc(x.name)+'</b> · '+esc(d.label)+' · container: '+esc(d.container)+' · '+d.duration+' min</p>'
+   +'<table><thead><tr><th>Spoor</th><th>Formaat</th><th>Taal</th><th>Naam</th><th>Details</th><th>Chromecast?</th></tr></thead><tbody>'
+   +d.streams.map(s=>'<tr><td>'+s.type+'</td><td>'+esc(s.codec)+'</td><td>'+esc(s.lang)+'</td><td>'+esc(s.title)+(s.flags?' <small>('+esc(s.flags)+')</small>':'')+'</td><td>'+esc(s.detail)+'</td><td class="'+(s.cast==='ja'?'ok':'bad')+'">'+esc(s.cast)+'</td></tr>').join('')
+   +'</tbody></table>';
+ }catch(err){pr.innerHTML='<p class="bad">'+esc(err.message)+'</p>'}}
+
 </script></body></html>"""
 
 
@@ -388,9 +575,19 @@ class H(BaseHTTPRequestHandler):
         self.send(404, "niet gevonden", "text/plain")
 
     def do_POST(self):
+        d = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        if self.path in ("/search", "/probe"):
+            try:
+                if self.path == "/search":
+                    res = search(d.get("server", ""), d.get("user", ""), d.get("pw", ""), d.get("q", ""))
+                else:
+                    res = probe(d.get("server", ""), d.get("user", ""), d.get("pw", ""),
+                                d.get("kind"), d.get("id"), d.get("ext", ""))
+            except Exception as e:
+                res = {"error": mask(f"{type(e).__name__}: {e}", [d.get("user", ""), d.get("pw", "")])}
+            return self.send(200, json.dumps(res), "application/json")
         if self.path != "/run":
             return self.send(404, "niet gevonden", "text/plain")
-        d = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
         res = run(d.get("server", ""), d.get("user", ""), d.get("pw", ""), d.get("worker") or DEFAULT_WORKER)
         self.send(200, json.dumps(res), "application/json")
 

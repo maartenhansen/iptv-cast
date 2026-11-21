@@ -4,3 +4,4 @@ node_modules/
 worker/secrets.env
 worker/.cloudflare/
 .dev.vars*
+home/tmp/

@@ -233,6 +233,11 @@ class Handler(BaseHTTPRequestHandler):
         except urllib.error.HTTPError as e:
             log(f"m3u8 {e.code} {redact(target)}")
             return self.reply(502, '{"error":"Server gaf fout %d"}' % e.code, "application/json")
+        except Blocked:
+            raise
+        except Exception as e:  # bv. server verbreekt de verbinding zonder antwoord
+            log(f"m3u8 mislukt ({type(e).__name__}: {e}) {redact(target)}")
+            return self.reply(502, json.dumps({"error": f"IPTV-server gaf geen antwoord ({type(e).__name__})"}), "application/json")
         if not text.lstrip().startswith("#EXTM3U"):
             return self.reply(502, '{"error":"Geen geldige HLS-afspeellijst"}', "application/json")
         me = f"http://{self.headers.get('Host') or f'{lan_ip()}:{PORT}'}"
@@ -267,6 +272,11 @@ class Handler(BaseHTTPRequestHandler):
         except urllib.error.HTTPError as e:
             log(f"{e.code} {redact(target)}")
             return self.reply(e.code, e.read(2000) or b"", e.headers.get("Content-Type", "text/plain"))
+        except Blocked:
+            raise
+        except Exception as e:
+            log(f"mislukt ({type(e).__name__}: {e}) {redact(target)}")
+            return self.reply(502, json.dumps({"error": f"IPTV-server gaf geen antwoord ({type(e).__name__})"}), "application/json")
         if not is_segment:
             take_slot(slot, resp)
             log(f"start {resp.status} {redact(target)} {rng or ''}")
