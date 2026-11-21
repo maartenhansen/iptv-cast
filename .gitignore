@@ -1,2 +1,6 @@
 __pycache__/
 .DS_Store
+node_modules/
+worker/secrets.env
+worker/.cloudflare/
+.dev.vars*
