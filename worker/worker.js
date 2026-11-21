@@ -17,6 +17,10 @@
 //   OS_API_KEY   (optioneel) API-sleutel van opensubtitles.com
 //   OS_USERNAME  (optioneel) je OpenSubtitles-gebruikersnaam (meer downloads per dag)
 //   OS_PASSWORD  (optioneel) je OpenSubtitles-wachtwoord
+//
+// Binding HOME (Workers VPC, via een Cloudflare Tunnel naar de Beelink):
+//   lijsten en afbeeldingen gaan eerst via de Beelink (met VPN), want je provider
+//   weigert Cloudflare af en toe. Lukt dat niet, dan rechtstreeks zoals vroeger.
 
 const IPTV_UA = 'VLC/3.0.20 LibVLC/3.0.20'; // veel IPTV-servers accepteren alleen bekende spelers
 const OS_UA = 'IPTVCast v1.0';
@@ -33,9 +37,9 @@ export default {
 
     try {
       switch (url.pathname) {
-        case '/api': return cors(await api(url));
+        case '/api': return cors(await viaHome(env, url, '/api') || await api(url));
         case '/m3u8': return cors(await playlist(url));
-        case '/p': return cors(await pass(url, req));
+        case '/p': return cors(await viaHome(env, url, '/p', req) || await pass(url, req));
         case '/subs/search': return cors(await subsSearch(url, env));
         case '/subs/file': return cors(await subsFile(url, env));
       }
@@ -45,6 +49,31 @@ export default {
     }
   },
 };
+
+// ---------- Via de Beelink (tunnel) ----------
+
+// Geeft het antwoord van de Beelink, of null als die niet bereikbaar is of de VPN uit staat.
+async function viaHome(env, url, path, req) {
+  if (!env.HOME) return null;
+  try {
+    const headers = {};
+    const range = req && req.headers.get('Range');
+    if (range) headers.Range = range;
+    // host en poort hier worden genegeerd: de VPC-service bepaalt waar het heen gaat
+    const r = await env.HOME.fetch(`http://localhost:8030${path}?${url.searchParams}`, { headers });
+    if (r.status === 503 || r.status === 502) return null; // VPN uit of server gaf geen antwoord
+    const out = new Headers();
+    for (const n of ['content-type', 'content-length', 'content-range', 'accept-ranges']) {
+      const v = r.headers.get(n);
+      if (v) out.set(n, v);
+    }
+    out.set('Cache-Control', 'no-store');
+    out.set('X-Via', 'beelink');
+    return new Response(r.body, { status: r.status, headers: out });
+  } catch (e) {
+    return null; // Beelink of tunnel niet bereikbaar
+  }
+}
 
 // ---------- Xtream ----------
 

@@ -10,6 +10,7 @@ Endpoints (allemaal met ?k=<APP_KEY>, dezelfde sleutel als de Worker):
     /            status (zonder sleutel)
     /m3u8?url=   HLS-afspeellijst, met alle links herschreven via deze Beelink
     /p?url=      bestand doorgeven (videostukjes, films), met vooruit/terugspoelen
+    /api?s=&...  lijsten (player_api.php) via de VPN; de Worker vraagt dit via de tunnel op
     /hls/play?url=&start=   film omzetten (geluid -> AAC, ondertitels -> WebVTT) als HLS
     /hls/<id>/<bestand>     stukjes van die omzetting (id is geheim, geen sleutel nodig)
 
@@ -203,6 +204,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.hls_file(m.group(1), m.group(2))
         if not APP_KEY or q.get("k", [""])[0] != APP_KEY:
             return self.reply(403, '{"error":"Verkeerde sleutel"}', "application/json")
+        if u.path == "/api":
+            return self.api(q)
         target = q.get("url", [""])[0]
         if not re.match(r"^https?://", target):
             return self.reply(400, '{"error":"Ongeldige url"}', "application/json")
@@ -234,6 +237,39 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 return
         self.reply(404, '{"error":"Onbekend adres"}', "application/json")
+
+    # ---- lijsten (voor de Worker, via de tunnel) ----
+    def api(self, q):
+        server = q.get("s", [""])[0].rstrip("/")
+        if not re.match(r"^https?://", server):
+            return self.reply(400, '{"error":"Ongeldig serveradres"}', "application/json")
+        if time.time() - _vpn["checked"] > VPN_CHECK_EVERY:
+            check_country()
+        if not vpn_ok():
+            return self.reply(503, '{"error":"VPN staat uit op de Beelink"}', "application/json")
+        try:
+            check_target(server)
+        except Blocked as e:
+            return self.reply(403, json.dumps({"error": str(e)}), "application/json")
+        params = [(k, v) for k, vals in q.items() if k not in ("s", "k") for v in vals]
+        req = urllib.request.Request(f"{server}/player_api.php?{urllib.parse.urlencode(params)}",
+                                     headers={"User-Agent": UA})
+        try:
+            with OPENER.open(req, timeout=60) as r:
+                body, code = r.read(), r.status
+        except urllib.error.HTTPError as e:
+            body, code = e.read(2000), e.code
+        except Blocked as e:
+            return self.reply(403, json.dumps({"error": str(e)}), "application/json")
+        except Exception as e:
+            log(f"lijst mislukt ({type(e).__name__})")
+            return self.reply(502, json.dumps({"error": f"IPTV-server gaf geen antwoord ({type(e).__name__})"}), "application/json")
+        if code != 200:
+            log(f"lijst: server gaf {code}")
+        try:
+            self.reply(code, body, "application/json; charset=utf-8")
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass
 
     # ---- omzetting met ffmpeg (geluid en ondertitels voor de Chromecast) ----
     def hls_play(self, target, q):

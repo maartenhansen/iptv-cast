@@ -5,3 +5,4 @@ worker/secrets.env
 worker/.cloudflare/
 .dev.vars*
 home/tmp/
+home/tunnel.token
