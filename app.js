@@ -1,4 +1,6 @@
 'use strict';
+const APP_VERSION = '1.0.0'; // wordt bij elke release aangepast door tools/release.py
+
 /* IPTV Cast: een kleine PWA die Xtream-IPTV naar een Chromecast stuurt, met ondertitels.
  *
  * Opbouw van dit bestand:
@@ -474,7 +476,8 @@ async function viewSettings(params) {
         <li><b>Live tv start niet?</b> Je abonnement moet het formaat m3u8 (HLS) toestaan. Dat staat hieronder na het testen.</li>
         <li><b>Geen ondertitels in de lijst?</b> Kijk of OS_API_KEY in de Worker staat. Ondertitels uit de stream zelf kies je tijdens het kijken met de knop CC.</li>
       </ul>
-    </details>`;
+    </details>
+    <p class="muted" style="text-align:center;font-size:12px">IPTV Cast versie ${APP_VERSION}</p>`;
   const f = $('#f');
   for (const [k, v] of Object.entries(S)) if (f.elements[k]) f.elements[k].value = v;
 
