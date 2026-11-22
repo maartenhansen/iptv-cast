@@ -38,7 +38,7 @@ export default {
     try {
       switch (url.pathname) {
         case '/api': return cors(await viaHome(env, url, '/api') || await api(url));
-        case '/m3u8': return cors(await viaHome(env, url, '/m3u8', null, { base: url.origin }) || await playlist(url));
+        case '/m3u8': return cors(await playlist(url));
         case '/p': return cors(await viaHome(env, url, '/p', req) || await pass(url, req));
         case '/subs/search': return cors(await subsSearch(url, env));
         case '/subs/file': return cors(await subsFile(url, env));
@@ -53,16 +53,14 @@ export default {
 // ---------- Via de Beelink (tunnel) ----------
 
 // Geeft het antwoord van de Beelink, of null als die niet bereikbaar is of de VPN uit staat.
-async function viaHome(env, url, path, req, extra) {
+async function viaHome(env, url, path, req) {
   if (!env.HOME) return null;
   try {
     const headers = {};
     const range = req && req.headers.get('Range');
     if (range) headers.Range = range;
     // host en poort hier worden genegeerd: de VPC-service bepaalt waar het heen gaat
-    const qs = new URLSearchParams(url.searchParams);
-    for (const [k, v] of Object.entries(extra || {})) qs.set(k, v);
-    const r = await env.HOME.fetch(`http://localhost:8030${path}?${qs}`, { headers });
+    const r = await env.HOME.fetch(`http://localhost:8030${path}?${url.searchParams}`, { headers });
     if (r.status === 503 || r.status === 502) return null; // VPN uit of server gaf geen antwoord
     const out = new Headers();
     for (const n of ['content-type', 'content-length', 'content-range', 'accept-ranges']) {

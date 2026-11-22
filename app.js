@@ -122,7 +122,7 @@ const MIME = {
 // Elk scherm is een "state" in de browsergeschiedenis, zodat de terugknop van je gsm werkt.
 
 const TABS = ['live', 'vod', 'series', 'settings'];
-const TAB_OF = { movie: 'vod', show: 'series', episode: 'series', watch: 'live' };
+const TAB_OF = { movie: 'vod', show: 'series', episode: 'series' };
 let renderToken = 0;
 let pendingTab = null;
 
@@ -154,10 +154,7 @@ window.addEventListener('popstate', e => {
 
 function startState() { return { name: configured() ? 'vod' : 'settings', params: {}, depth: 0 }; }
 
-let viewCleanup = null; // bv. de speler stoppen als je het scherm verlaat
-
 async function show(st) {
-  if (viewCleanup) { try { viewCleanup(); } catch { /* al gestopt */ } viewCleanup = null; }
   const token = ++renderToken;
   const alive = () => token === renderToken;
   let { name, params = {} } = st;
@@ -268,18 +265,32 @@ async function viewList(kind, params, alive) {
   await load();
 }
 
-// Tik op een zender: kies casten naar de tv of kijken op de gsm
+// Tik op een zender: kies casten naar de tv of rechtstreeks kijken in VLC op de gsm
 function chooseLive(it) {
   openSheet(`
     <h3>${esc(it.name)}</h3>
     <button class="opt" data-act="cast">📺&nbsp; Casten naar tv</button>
-    <button class="opt" data-act="watch">📱&nbsp; Kijken op gsm</button>`, e => {
+    <button class="opt" data-act="vlc">📱&nbsp; Openen in VLC</button>`, e => {
     const a = e.target.closest('[data-act]')?.dataset.act;
     if (!a) return;
     closeSheet();
     if (a === 'cast') playLive(it);
-    else go('watch', { id: it.stream_id, name: it.name, icon: it.stream_icon || '' });
+    else openInVlc(it);
   });
+}
+
+// VLC op de gsm haalt de zender zelf rechtstreeks op (via de VPN van de gsm), zonder Worker of Beelink.
+function openInVlc(it) {
+  const url = `${streamBase('live')}/${it.stream_id}.ts`;
+  if (/iPhone|iPad|iPod/.test(navigator.userAgent)) {
+    location.href = `vlc-x-callback://x-callback-url/stream?url=${encodeURIComponent(url)}`;
+    return;
+  }
+  const u = new URL(url);
+  const store = 'https://play.google.com/store/apps/details?id=org.videolan.vlc';
+  location.href = `intent://${u.host}${u.pathname}${u.search}#Intent;scheme=${u.protocol.slice(0, -1)};`
+    + `package=org.videolan.vlc;type=video/*;S.title=${encodeURIComponent(it.name)};`
+    + `S.browser_fallback_url=${encodeURIComponent(store)};end`;
 }
 
 function playLive(it) {
@@ -506,85 +517,6 @@ async function testConnection() {
   }
 }
 
-// ---------- Live tv kijken op de gsm ----------
-// De gsm haalt de zender op via de Worker -> tunnel -> Beelink (met VPN). Casten blijft ongewijzigd.
-
-const HLS_JS = 'https://cdnjs.cloudflare.com/ajax/libs/hls.js/1.5.17/hls.min.js';
-let hlsLoading = null;
-function loadHls() {
-  if (window.Hls) return Promise.resolve(window.Hls);
-  if (!hlsLoading) {
-    hlsLoading = new Promise((res, rej) => {
-      const s = document.createElement('script');
-      s.src = HLS_JS;
-      s.onload = () => res(window.Hls);
-      s.onerror = () => { hlsLoading = null; rej(new Error('Speler kon niet geladen worden')); };
-      document.head.appendChild(s);
-    });
-  }
-  return hlsLoading;
-}
-
-async function viewWatch({ id, name, icon }, alive) {
-  setTitle(name || 'Live tv');
-  if (player?.isConnected && player.mediaInfo) {
-    toast('Er speelt nog iets op de tv. Je abonnement staat maar 1 stream tegelijk toe: stop eerst de tv.', 7000);
-  }
-  const src = workerUrl('/m3u8', { url: `${streamBase('live')}/${id}.m3u8` });
-  view.innerHTML = `
-    <div class="watch-box">
-      <video id="tv" controls playsinline autoplay ${imgUrl(icon) ? `poster="${esc(imgUrl(icon))}"` : ''}></video>
-      <div id="watch-status" class="muted">Zender laden…</div>
-      <div class="btns">
-        <button class="secondary" id="watch-cast">Op tv casten</button>
-      </div>
-    </div>`;
-  const video = $('#tv'), status = $('#watch-status');
-  let hls = null;
-  viewCleanup = () => {
-    if (hls) { hls.destroy(); hls = null; }
-    video.pause(); video.removeAttribute('src'); video.load();
-  };
-  $('#watch-cast').onclick = () => {
-    viewCleanup(); viewCleanup = null;
-    status.textContent = 'Gestopt op de gsm, versturen naar tv…';
-    playLive({ stream_id: id, name, stream_icon: icon });
-  };
-  const playing = () => { status.textContent = 'Live'; };
-  video.addEventListener('playing', playing);
-  video.addEventListener('waiting', () => { status.textContent = 'Bufferen…'; });
-
-  let Hls = null;
-  try { Hls = await loadHls(); } catch { /* val terug op ingebouwde speler */ }
-  if (!alive()) return viewCleanup?.();
-  if (Hls && Hls.isSupported()) {
-    hls = new Hls({ lowLatencyMode: false, backBufferLength: 30, manifestLoadingMaxRetry: 3, levelLoadingMaxRetry: 4 });
-    hls.on(Hls.Events.ERROR, (_, data) => {
-      if (!data.fatal) return;
-      if (data.type === Hls.ErrorTypes.NETWORK_ERROR && data.details !== 'manifestLoadError') {
-        status.textContent = 'Verbinding hapert, opnieuw proberen…';
-        hls.startLoad();
-      } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
-        hls.recoverMediaError();
-      } else {
-        const code = data.response?.code;
-        status.textContent = code === 503 || code === 502 || code === 403
-          ? `Zender niet bereikbaar (fout ${code}). Staat de VPN aan op de Beelink?`
-          : code ? `Zender niet beschikbaar (fout ${code}).` : 'Zender kon niet geladen worden. Staat de VPN aan op de Beelink?';
-        hls.destroy(); hls = null;
-      }
-    });
-    hls.loadSource(src);
-    hls.attachMedia(video);
-  } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-    video.src = src;
-  } else {
-    status.textContent = 'Deze browser kan geen live tv afspelen.';
-    return;
-  }
-  video.play().catch(() => { status.textContent = 'Tik op ▶ om te starten.'; });
-}
-
 const VIEWS = {
   live: (p, a) => viewList('live', p, a),
   vod: (p, a) => viewList('vod', p, a),
@@ -592,7 +524,6 @@ const VIEWS = {
   movie: viewMovie,
   show: viewShow,
   episode: viewEpisode,
-  watch: viewWatch,
   settings: viewSettings,
 };
 

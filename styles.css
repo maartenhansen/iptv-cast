@@ -88,10 +88,6 @@ select:focus, input:focus { border-color: var(--accent); }
 .poster img, .logo img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
 .logo img { object-fit: contain; padding: 4px; }
 
-/* Live tv op de gsm */
-.watch-box video { width: 100%; aspect-ratio: 16 / 9; background: #000; border-radius: 10px; display: block; }
-#watch-status { margin-top: 8px; font-size: 13px; }
-
 /* Lijst (live) */
 .rows { display: flex; flex-direction: column; }
 .row {
