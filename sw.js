@@ -1,7 +1,7 @@
 // Service worker: laat de app openen als een echte app, ook bij slechte verbinding.
 // Strategie: eerst het netwerk (altijd de nieuwste versie), anders de opgeslagen kopie.
 // Alleen de eigen app-bestanden; streams en lijsten worden nooit opgeslagen.
-const CACHE = 'iptv-cast-v2';
+const CACHE = 'iptv-cast-1.1.0'; // versie: aangepast door tools/release.py
 const FILES = ['./', './index.html', './styles.css', './app.js', './manifest.webmanifest',
   './icons/icon-192.png', './icons/icon-512.png'];
 
@@ -23,7 +23,7 @@ self.addEventListener('fetch', e => {
   if (e.request.method !== 'GET' || url.origin !== location.origin) return;
   if (/\/(api|p|m3u8)$/.test(url.pathname) || url.pathname.includes('/subs/')) return; // dev-server
   e.respondWith(
-    fetch(e.request)
+    fetch(e.request, { cache: 'no-cache' }) // altijd bij de server nagaan of er een nieuwere versie is
       .then(res => {
         const copy = res.clone();
         caches.open(CACHE).then(c => c.put(e.request, copy));

@@ -1,4 +1,6 @@
 'use strict';
+const APP_VERSION = '1.1.0'; // wordt bij elke release aangepast door tools/release.py
+
 /* IPTV Cast: een kleine PWA die Xtream-IPTV naar een Chromecast stuurt, met ondertitels.
  *
  * Opbouw van dit bestand:
@@ -256,13 +258,40 @@ async function viewList(kind, params, alive) {
     const b = e.target.closest('[data-i]');
     if (!b) return;
     const it = shown[+b.dataset.i];
-    if (kind === 'live') playLive(it);
+    if (kind === 'live') chooseLive(it);
     else if (kind === 'vod') go('movie', { id: it.stream_id, ext: it.container_extension });
     else go('show', { id: it.series_id, tmdb: it.tmdb || it.tmdb_id || '' });
   };
   function showErr(e) { box.innerHTML = `<div class="error">${esc(e.message)}</div>`; }
 
   await load();
+}
+
+// Tik op een zender: kies casten naar de tv of rechtstreeks kijken in VLC op de gsm
+function chooseLive(it) {
+  openSheet(`
+    <h3>${esc(it.name)}</h3>
+    <button class="opt" data-act="cast">📺&nbsp; Casten naar tv</button>
+    <button class="opt" data-act="vlc">📱&nbsp; Openen in VLC</button>`, e => {
+    const a = e.target.closest('[data-act]')?.dataset.act;
+    if (!a) return;
+    closeSheet();
+    if (a === 'cast') playLive(it);
+    else openInVlc(`${streamBase('live')}/${it.stream_id}.ts`, it.name);
+  });
+}
+
+// VLC op de gsm haalt de stream zelf rechtstreeks op (via de VPN van de gsm), zonder Worker of Beelink.
+function openInVlc(url, title) {
+  if (/iPhone|iPad|iPod/.test(navigator.userAgent)) {
+    location.href = `vlc-x-callback://x-callback-url/stream?url=${encodeURIComponent(url)}`;
+    return;
+  }
+  const u = new URL(url);
+  const store = 'https://play.google.com/store/apps/details?id=org.videolan.vlc';
+  location.href = `intent://${u.host}${u.pathname}${u.search}#Intent;scheme=${u.protocol.slice(0, -1)};`
+    + `package=org.videolan.vlc;type=video/*;S.title=${encodeURIComponent(title || '')};`
+    + `S.browser_fallback_url=${encodeURIComponent(store)};end`;
 }
 
 function playLive(it) {
@@ -296,9 +325,12 @@ function bindPlay(key, getMedia) {
     ? `<button class="primary" data-t="${pos.t}">▶ Verder kijken vanaf ${fmt(pos.t)}</button>
        <button class="secondary" data-t="0">Vanaf het begin</button>`
     : '<button class="primary" data-t="0">▶ Casten naar tv</button>';
+  box.insertAdjacentHTML('beforeend', '<button class="secondary" data-vlc>📱 Openen in VLC</button>');
   box.onclick = e => {
     const b = e.target.closest('button');
-    if (b) castMedia({ ...getMedia(), key, start: +b.dataset.t });
+    if (!b) return;
+    if ('vlc' in b.dataset) { const m = getMedia(); return openInVlc(m.url, m.title); }
+    castMedia({ ...getMedia(), key, start: +b.dataset.t });
   };
 }
 
@@ -444,7 +476,8 @@ async function viewSettings(params) {
         <li><b>Live tv start niet?</b> Je abonnement moet het formaat m3u8 (HLS) toestaan. Dat staat hieronder na het testen.</li>
         <li><b>Geen ondertitels in de lijst?</b> Kijk of OS_API_KEY in de Worker staat. Ondertitels uit de stream zelf kies je tijdens het kijken met de knop CC.</li>
       </ul>
-    </details>`;
+    </details>
+    <p class="muted" style="text-align:center;font-size:12px">IPTV Cast versie ${APP_VERSION}</p>`;
   const f = $('#f');
   for (const [k, v] of Object.entries(S)) if (f.elements[k]) f.elements[k].value = v;
 

@@ -12,7 +12,8 @@ from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-PORT = 8010
+DEV = os.path.basename(ROOT).endswith("-dev")  # map iptv-cast-dev = ontwikkelversie
+PORT = 8011 if DEV else 8010
 
 LIVE_CATS = [{"category_id": str(i), "category_name": n} for i, n in enumerate(["NL | Algemeen", "BE | Vlaams", "Sport"], 1)]
 VOD_CATS = [{"category_id": str(i), "category_name": n} for i, n in enumerate(["Nieuw toegevoegd", "Actie", "Komedie"], 10)]

@@ -51,6 +51,22 @@ Je gegevens blijven alleen op je gsm (in de app) en gaan enkel naar je eigen Wor
 - Gratis Cloudflare-plan: 100.000 verzoeken per dag. Dat volstaat ruim voor live tv en ondertitels. Films gaan standaard rechtstreeks naar de Chromecast en alleen via de Worker als dat niet lukt.
 - Sommige IPTV-providers blokkeren verzoeken van servers zoals Cloudflare. Krijg je in Instellingen een fout terwijl je login klopt, dan is dat waarschijnlijk de oorzaak.
 
+## Versies: dev, productie en terugzetten
+
+| | Map | Branch | Adres |
+|---|---|---|---|
+| Ontwikkeling | `iptv-cast-dev` | `dev` | https://maartenhansen.github.io/iptv-cast-dev/ (oranje DEV-label) |
+| Productie | `iptv-cast` | `main` | https://stream.hansen-tools.be |
+
+- Nieuwe dingen worden altijd eerst in **dev** gebouwd en getest (`py dev/deploy_dev.py` zet de dev-site online).
+- **In productie zetten** als nieuwe versie (in PowerShell, vanuit de map `iptv-cast`):
+  `py tools\release.py 1.2.0`
+  Dit maakt van de dev-versie versie 1.2.0, zet ze online (app, Worker en thuis-tussenschakel) en schrijft de wijzigingen in [CHANGELOG.md](CHANGELOG.md).
+- **Terugzetten** naar een eerdere versie:
+  `py tools\rollback.py` toont alle versies, `py tools\rollback.py 1.1.0` zet de productie terug naar 1.1.0.
+  Er gaat niets verloren: later gewoon opnieuw `release.py` (of `rollback.py` naar een nieuwere versie).
+- Het versienummer van de app staat onderaan bij **Instellingen**.
+
 ## Lokaal testen (zonder echte login)
 ```
 py dev/dev_server.py
