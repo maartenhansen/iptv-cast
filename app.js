@@ -275,13 +275,12 @@ function chooseLive(it) {
     if (!a) return;
     closeSheet();
     if (a === 'cast') playLive(it);
-    else openInVlc(it);
+    else openInVlc(`${streamBase('live')}/${it.stream_id}.ts`, it.name);
   });
 }
 
-// VLC op de gsm haalt de zender zelf rechtstreeks op (via de VPN van de gsm), zonder Worker of Beelink.
-function openInVlc(it) {
-  const url = `${streamBase('live')}/${it.stream_id}.ts`;
+// VLC op de gsm haalt de stream zelf rechtstreeks op (via de VPN van de gsm), zonder Worker of Beelink.
+function openInVlc(url, title) {
   if (/iPhone|iPad|iPod/.test(navigator.userAgent)) {
     location.href = `vlc-x-callback://x-callback-url/stream?url=${encodeURIComponent(url)}`;
     return;
@@ -289,7 +288,7 @@ function openInVlc(it) {
   const u = new URL(url);
   const store = 'https://play.google.com/store/apps/details?id=org.videolan.vlc';
   location.href = `intent://${u.host}${u.pathname}${u.search}#Intent;scheme=${u.protocol.slice(0, -1)};`
-    + `package=org.videolan.vlc;type=video/*;S.title=${encodeURIComponent(it.name)};`
+    + `package=org.videolan.vlc;type=video/*;S.title=${encodeURIComponent(title || '')};`
     + `S.browser_fallback_url=${encodeURIComponent(store)};end`;
 }
 
@@ -324,9 +323,12 @@ function bindPlay(key, getMedia) {
     ? `<button class="primary" data-t="${pos.t}">▶ Verder kijken vanaf ${fmt(pos.t)}</button>
        <button class="secondary" data-t="0">Vanaf het begin</button>`
     : '<button class="primary" data-t="0">▶ Casten naar tv</button>';
+  box.insertAdjacentHTML('beforeend', '<button class="secondary" data-vlc>📱 Openen in VLC</button>');
   box.onclick = e => {
     const b = e.target.closest('button');
-    if (b) castMedia({ ...getMedia(), key, start: +b.dataset.t });
+    if (!b) return;
+    if ('vlc' in b.dataset) { const m = getMedia(); return openInVlc(m.url, m.title); }
+    castMedia({ ...getMedia(), key, start: +b.dataset.t });
   };
 }
 
