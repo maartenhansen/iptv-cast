@@ -48,7 +48,8 @@ def main():
     if not os.path.exists(os.path.join(ROOT, ".git", "MERGE_HEAD")):
         sys.exit("Samenvoegen met dev mislukt. Er is niets online gezet.")
     git("commit", "-q", "-m", f"Versie {v}\n\n" + "\n".join(f"- {c}" for c in changes))
-    git("tag", "-a", f"v{v}", "-m", f"Versie {v}: " + "; ".join(changes)[:300])
+    git("tag", "-a", f"v{v}", "-m", f"Versie {v} ({len(changes)} wijziging{'en' if len(changes) != 1 else ''})\n\n"
+        + "\n".join(f"- {c}" for c in changes))
     say(f"  Versie v{v} vastgelegd.")
 
     git("push", "-q", "origin", "main", f"v{v}")
