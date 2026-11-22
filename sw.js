@@ -23,7 +23,7 @@ self.addEventListener('fetch', e => {
   if (e.request.method !== 'GET' || url.origin !== location.origin) return;
   if (/\/(api|p|m3u8)$/.test(url.pathname) || url.pathname.includes('/subs/')) return; // dev-server
   e.respondWith(
-    fetch(e.request)
+    fetch(e.request, { cache: 'no-cache' }) // altijd bij de server nagaan of er een nieuwere versie is
       .then(res => {
         const copy = res.clone();
         caches.open(CACHE).then(c => c.put(e.request, copy));
