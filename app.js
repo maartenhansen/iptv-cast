@@ -230,8 +230,7 @@ async function viewList(kind, params, alive) {
     const pos = kind === 'live' ? {} : store.get(LS_POS, {});
     const cards = shown.map((it, i) => {
       if (kind === 'live') {
-        return `<div class="live-row"><button class="row" data-i="${i}">${thumb(it.stream_icon, it.name, 'logo')}<span>${esc(it.name)}</span></button>`
-          + `<button class="watch" data-w="${i}" aria-label="Kijk op gsm" title="Kijk op gsm">📱</button></div>`;
+        return `<button class="row" data-i="${i}">${thumb(it.stream_icon, it.name, 'logo')}<span>${esc(it.name)}</span></button>`;
       }
       const p = kind === 'vod' ? pos[`vod:${it.stream_id}`] : null;
       const bar = p?.d ? `<div class="progress"><i style="width:${clamp(p.t / p.d * 100, 2, 100)}%"></i></div>` : '';
@@ -257,21 +256,30 @@ async function viewList(kind, params, alive) {
   box.onclick = e => {
     if (e.target.closest('[data-more]')) { limit += 240; save(); return draw(); }
     if (e.target.closest('[data-all]')) { cat = ''; sel.value = ''; save(); return load().catch(showErr); }
-    const w = e.target.closest('[data-w]');
-    if (w) {
-      const it = shown[+w.dataset.w];
-      return go('watch', { id: it.stream_id, name: it.name, icon: it.stream_icon || '' });
-    }
     const b = e.target.closest('[data-i]');
     if (!b) return;
     const it = shown[+b.dataset.i];
-    if (kind === 'live') playLive(it);
+    if (kind === 'live') chooseLive(it);
     else if (kind === 'vod') go('movie', { id: it.stream_id, ext: it.container_extension });
     else go('show', { id: it.series_id, tmdb: it.tmdb || it.tmdb_id || '' });
   };
   function showErr(e) { box.innerHTML = `<div class="error">${esc(e.message)}</div>`; }
 
   await load();
+}
+
+// Tik op een zender: kies casten naar de tv of kijken op de gsm
+function chooseLive(it) {
+  openSheet(`
+    <h3>${esc(it.name)}</h3>
+    <button class="opt" data-act="cast">📺&nbsp; Casten naar tv</button>
+    <button class="opt" data-act="watch">📱&nbsp; Kijken op gsm</button>`, e => {
+    const a = e.target.closest('[data-act]')?.dataset.act;
+    if (!a) return;
+    closeSheet();
+    if (a === 'cast') playLive(it);
+    else go('watch', { id: it.stream_id, name: it.name, icon: it.stream_icon || '' });
+  });
 }
 
 function playLive(it) {
