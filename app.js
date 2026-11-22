@@ -568,8 +568,9 @@ async function viewWatch({ id, name, icon }, alive) {
         hls.recoverMediaError();
       } else {
         const code = data.response?.code;
-        status.textContent = code === 503 ? 'De VPN staat uit op de Beelink.'
-          : code ? `Zender niet beschikbaar (fout ${code}).` : 'Zender kon niet geladen worden.';
+        status.textContent = code === 503 || code === 502 || code === 403
+          ? `Zender niet bereikbaar (fout ${code}). Staat de VPN aan op de Beelink?`
+          : code ? `Zender niet beschikbaar (fout ${code}).` : 'Zender kon niet geladen worden. Staat de VPN aan op de Beelink?';
         hls.destroy(); hls = null;
       }
     });
